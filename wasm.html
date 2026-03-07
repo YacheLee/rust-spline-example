@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WASM Spline 1M Points</title>
+    <style>
+        body { font-family: monospace; background: #111; color: #0f0; padding: 20px; }
+        .container { max-width: 1000px; margin: 0 auto; background: #222; padding: 20px; border-radius: 8px; }
+        canvas { border: 1px solid #333; width: 100%; height: 500px; background: #000; }
+        #status { font-family: monospace; font-size: 0.9rem; margin-bottom: 10px; color: #4af626; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div id="status">Loading WASM...</div>
+    <canvas id="canvas"></canvas>
+</div>
+
+<script type="module">
+    import init, { WasmSpline } from './pkg/spline_wasm.js';
+
+    async function run() {
+        const wasm = await init();
+        const n = 10000;
+        const xData = new Float64Array(n);
+        const yData = new Float64Array(n);
+        for (let i = 0; i < n; i++) {
+            xData[i] = i;
+            // Match standard logic frequency (0.05)
+            yData[i] = Math.sin(i * 0.05) * 100 + (Math.random() * 20) + 200;
+        }
+
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const status = document.getElementById('status');
+
+        function draw() {
+            canvas.width = canvas.offsetWidth;
+            canvas.height = canvas.offsetHeight;
+            const p = 0.0001;
+            const t0 = performance.now();
+            const spline = new WasmSpline(xData, yData, p);
+            const t1 = performance.now();
+
+            const coeffsPtr = spline.get_coeffs_ptr();
+            const coeffs = new Float64Array(wasm.memory.buffer, coeffsPtr, (n - 1) * 4);
+            status.innerText = `Math (WASM): ${(t1-t0).toFixed(2)}ms`;
+
+            ctx.beginPath();
+            ctx.strokeStyle = "cyan";
+            const scaleX = canvas.width / n;
+            let interval = 0;
+            for(let px=0; px<canvas.width; px++) {
+                const tx = px / scaleX;
+                while(interval < n-2 && xData[interval+1] < tx) interval++;
+                const dx = tx - xData[interval];
+                const off = interval * 4;
+                const y = coeffs[off]*dx**3 + coeffs[off+1]*dx**2 + coeffs[off+2]*dx + coeffs[off+3];
+                if(px === 0) ctx.moveTo(px, y);
+                else ctx.lineTo(px, y);
+            }
+            ctx.stroke();
+        }
+
+        window.addEventListener('resize', draw);
+        draw();
+    }
+    run();
+</script>
+</body>
+</html>
