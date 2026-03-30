@@ -8,6 +8,7 @@
     .container { max-width: 1000px; margin: 0 auto; background: #222; padding: 20px; border-radius: 8px; }
     canvas { border: 1px solid #333; width: 100%; height: 500px; background: #000; }
     .stats { font-family: monospace; font-size: 0.9rem; margin-bottom: 10px; color: #4af626; }
+    .slider-group { margin-top: 20px; }
   </style>
 </head>
 <body>
@@ -16,7 +17,12 @@
   <div id="perf" class="stats">Calculation: 0ms</div>
   <canvas id="splineCanvas"></canvas>
 
-  <div style="margin-top:20px">
+  <div class="slider-group">
+    <label>Number of Points (n): <span id="nVal">10000</span></label><br>
+    <input type="range" id="nSlider" min="1000" max="1000000" step="1000" value="10000" style="width:100%">
+  </div>
+
+  <div class="slider-group">
     <label>Smoothing (p): <span id="pVal">0.0001</span></label><br>
     <input type="range" id="pSlider" min="0" max="0.001" step="0.000001" value="0.0001" style="width:100%">
   </div>
@@ -91,27 +97,40 @@
     }
   }
 
-  const points = 50000000;
-  const xArr = new Float64Array(points);
-  const yArr = new Float64Array(points);
-  for (let i = 0; i < points; i++) {
-    xArr[i] = i;
-    yArr[i] = Math.sin(i * 0.05) * 100 + (Math.random() * 20) + 200;
-  }
-
   const canvas = document.getElementById('splineCanvas');
   const ctx = canvas.getContext('2d');
+
   const pSlider = document.getElementById('pSlider');
   const pValText = document.getElementById('pVal');
+  const nSlider = document.getElementById('nSlider');
+  const nValText = document.getElementById('nVal');
   const perfText = document.getElementById('perf');
+
+  let points;
+  let xArr;
+  let yArr;
+
+  function generateData() {
+    points = parseInt(nSlider.value);
+    nValText.innerText = points;
+
+    xArr = new Float64Array(points);
+    yArr = new Float64Array(points);
+    for (let i = 0; i < points; i++) {
+      xArr[i] = i;
+      yArr[i] = Math.sin(i * 0.05) * 100 + (Math.random() * 20) + 200;
+    }
+  }
 
   function draw() {
     const p = parseFloat(pSlider.value);
     pValText.innerText = p;
+
     const t0 = performance.now();
     const spline = new CubicSmoothingSpline(xArr, yArr, p);
     const t1 = performance.now();
-    perfText.innerText = `Calculation (JS): ${(t1 - t0).toFixed(2)}ms`;
+
+    perfText.innerText = `Calculation (JS): ${(t1 - t0).toFixed(2)}ms | Points: ${points}`;
 
     canvas.width = canvas.offsetWidth;
     canvas.height = canvas.offsetHeight;
@@ -119,6 +138,7 @@
     ctx.strokeStyle = "cyan";
     const scaleX = canvas.width / points;
     let segment = 0;
+
     for (let px = 0; px < canvas.width; px++) {
       const tx = px / scaleX;
       while (segment < points - 2 && xArr[segment + 1] < tx) segment++;
@@ -131,8 +151,17 @@
     ctx.stroke();
   }
 
+  // Event Listeners
+  nSlider.addEventListener('input', () => {
+    generateData();
+    draw();
+  });
+
   pSlider.addEventListener('input', draw);
   window.addEventListener('resize', draw);
+
+  // Initialize
+  generateData();
   draw();
 </script>
 </body>

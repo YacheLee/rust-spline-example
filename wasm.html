@@ -1,18 +1,29 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>WASM Spline 1M Points</title>
+    <title>WASM Spline</title>
     <style>
         body { font-family: monospace; background: #111; color: #0f0; padding: 20px; }
         .container { max-width: 1000px; margin: 0 auto; background: #222; padding: 20px; border-radius: 8px; }
         canvas { border: 1px solid #333; width: 100%; height: 500px; background: #000; }
-        #status { font-family: monospace; font-size: 0.9rem; margin-bottom: 10px; color: #4af626; }
+        .stats { font-family: monospace; font-size: 0.9rem; margin-bottom: 10px; color: #4af626; }
+        .slider-group { margin-top: 20px; }
     </style>
 </head>
 <body>
 <div class="container">
-    <div id="status">Loading WASM...</div>
+    <div id="status" class="stats">Loading WASM...</div>
     <canvas id="canvas"></canvas>
+
+    <div class="slider-group">
+        <label>Number of Points (n): <span id="nVal">10000</span></label><br>
+        <input type="range" id="nSlider" min="1000" max="1000000" step="1000" value="10000" style="width:100%">
+    </div>
+
+    <div class="slider-group">
+        <label>Smoothing (p): <span id="pVal">0.0001</span></label><br>
+        <input type="range" id="pSlider" min="0" max="0.001" step="0.000001" value="0.0001" style="width:100%">
+    </div>
 </div>
 
 <script type="module">
@@ -20,35 +31,54 @@
 
     async function run() {
         const wasm = await init();
-        const n = 10000;
-        const xData = new Float64Array(n);
-        const yData = new Float64Array(n);
-        for (let i = 0; i < n; i++) {
-            xData[i] = i;
-            // Match standard logic frequency (0.05)
-            yData[i] = Math.sin(i * 0.05) * 100 + (Math.random() * 20) + 200;
-        }
 
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
         const status = document.getElementById('status');
 
+        const nSlider = document.getElementById('nSlider');
+        const nValText = document.getElementById('nVal');
+        const pSlider = document.getElementById('pSlider');
+        const pValText = document.getElementById('pVal');
+
+        let n;
+        let xData;
+        let yData;
+
+        // Separate data generation so we don't recalculate it unnecessarily
+        // when only adjusting the smoothing (p) slider.
+        function generateData() {
+            n = parseInt(nSlider.value);
+            nValText.innerText = n;
+
+            xData = new Float64Array(n);
+            yData = new Float64Array(n);
+            for (let i = 0; i < n; i++) {
+                xData[i] = i;
+                yData[i] = Math.sin(i * 0.05) * 100 + (Math.random() * 20) + 200;
+            }
+        }
+
         function draw() {
+            const p = parseFloat(pSlider.value);
+            pValText.innerText = p;
+
             canvas.width = canvas.offsetWidth;
             canvas.height = canvas.offsetHeight;
-            const p = 0.0001;
+
             const t0 = performance.now();
             const spline = new WasmSpline(xData, yData, p);
             const t1 = performance.now();
 
             const coeffsPtr = spline.get_coeffs_ptr();
             const coeffs = new Float64Array(wasm.memory.buffer, coeffsPtr, (n - 1) * 4);
-            status.innerText = `Math (WASM): ${(t1-t0).toFixed(2)}ms`;
+            status.innerText = `Math (WASM): ${(t1-t0).toFixed(2)}ms | Points: ${n}`;
 
             ctx.beginPath();
             ctx.strokeStyle = "cyan";
             const scaleX = canvas.width / n;
             let interval = 0;
+
             for(let px=0; px<canvas.width; px++) {
                 const tx = px / scaleX;
                 while(interval < n-2 && xData[interval+1] < tx) interval++;
@@ -59,11 +89,27 @@
                 else ctx.lineTo(px, y);
             }
             ctx.stroke();
+
+            // Prevent memory leaks
+            if (spline.free) {
+                spline.free();
+            }
         }
 
+        // Event Listeners
+        nSlider.addEventListener('input', () => {
+            generateData();
+            draw();
+        });
+
+        pSlider.addEventListener('input', draw);
         window.addEventListener('resize', draw);
+
+        // Initialize
+        generateData();
         draw();
     }
+
     run();
 </script>
 </body>
