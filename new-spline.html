@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WASM Spline Renderer - 1.5M Scale</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #121212;
+            color: #ffffff;
+            font-family: sans-serif;
+        }
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+        #ui-panel {
+            position: absolute;
+            top: 16px;
+            left: 16px;
+            background: rgba(30, 30, 30, 0.85);
+            padding: 16px;
+            border-radius: 8px;
+            border: 1px solid #333;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            width: 320px;
+        }
+        .metric {
+            font-family: monospace;
+            color: #4ade80;
+            font-size: 1.1em;
+            float: right;
+        }
+        .slider-container {
+            margin-top: 15px;
+            padding-top: 15px;
+            border-top: 1px solid #444;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        label {
+            font-size: 0.9em;
+            color: #e4e4e7;
+        }
+        input[type=range] {
+            width: 100%;
+            cursor: pointer;
+        }
+        #warning {
+            color: #ef4444;
+            font-size: 0.8em;
+            margin-top: 5px;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+<div id="ui-panel">
+    <h3 style="margin-top: 0;">Spatial Canvas Engine</h3>
+
+    <div class="slider-container" style="border-top: none; padding-top: 0; margin-top: 0;">
+        <label for="n-slider">Data Points (N): <span id="n-value" class="metric">5,000</span></label>
+        <input type="range" id="n-slider" min="1000" max="1500000" step="1000" value="5000">
+        <div id="warning">High N may drop framerate during rendering.</div>
+    </div>
+
+    <div class="slider-container">
+        <label for="p-slider">Smoothing Factor (p): <span id="p-value" class="metric">0.9900</span></label>
+        <input type="range" id="p-slider" min="0.0001" max="1" step="0.0001" value="0.99">
+    </div>
+
+    <div class="slider-container" style="font-size: 0.9em;">
+        <div>WASM Solve Time: <span id="solve-time" class="metric">-- ms</span></div>
+        <div style="margin-top: 8px;">Canvas Render Time: <span id="render-time" class="metric">-- ms</span></div>
+    </div>
+
+    <div style="margin-top: 15px; font-size: 0.9em; color: #a1a1aa;">
+        <span style="color: rgba(255, 50, 50, 0.4);">■</span> Raw Data<br>
+        <span style="color: #4ade80;">■</span> Smoothed Spline (SciPy Exact)
+    </div>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<script type="module">
+    import init, { solve_spline } from './pkg/spline_wasm.js';
+
+    // Global state
+    let N = 5000;
+    let xData, yData, weights, smoothedY;
+    let pieces;
+
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    let canvasWidth, canvasHeight;
+
+    async function main() {
+        await init();
+        console.log("WASM Module Loaded.");
+
+        setupCanvas();
+        window.addEventListener('resize', () => {
+            setupCanvas();
+            generateData();
+            requestAnimationFrame(updateSpline);
+        });
+
+        // Initialize data buffers for the first time
+        generateData();
+        updateSpline();
+
+        // --- Event Listeners ---
+
+        const pSlider = document.getElementById('p-slider');
+        const nSlider = document.getElementById('n-slider');
+        const nValueLabel = document.getElementById('n-value');
+        const warningLabel = document.getElementById('warning');
+
+        // 'input' fires continuously as you drag. Safe for P, since data size doesn't change.
+        pSlider.addEventListener('input', () => {
+            requestAnimationFrame(updateSpline);
+        });
+
+        // 'input' for N just updates the label so the user sees what number they are on
+        nSlider.addEventListener('input', (e) => {
+            const tempN = parseInt(e.target.value, 10);
+            nValueLabel.innerText = tempN.toLocaleString();
+            warningLabel.style.display = tempN > 500000 ? 'block' : 'none';
+        });
+
+        // 'change' fires only when the user RELEASES the mouse button.
+        // Crucial for heavy memory allocations.
+        nSlider.addEventListener('change', (e) => {
+            N = parseInt(e.target.value, 10);
+            generateData();
+            requestAnimationFrame(updateSpline);
+        });
+    }
+
+    function setupCanvas() {
+        const dpr = window.devicePixelRatio || 1;
+        canvasWidth = window.innerWidth;
+        canvasHeight = window.innerHeight;
+        canvas.width = canvasWidth * dpr;
+        canvas.height = canvasHeight * dpr;
+        ctx.scale(dpr, dpr);
+    }
+
+    function generateData() {
+        // Discard old arrays and allocate exact memory needed for the new N
+        pieces = N - 1;
+        xData = new Float64Array(N);
+        yData = new Float64Array(N);
+        weights = new Float64Array(N).fill(1.0);
+        smoothedY = new Float64Array(N);
+
+        for (let i = 0; i < N; i++) {
+            xData[i] = (i / pieces) * canvasWidth;
+            const noise = (Math.random() - 0.5) * (canvasHeight * 0.2);
+            const sine = Math.sin((i / N) * Math.PI * 4) * (canvasHeight * 0.25);
+            yData[i] = (canvasHeight / 2) + sine + noise;
+        }
+    }
+
+    function updateSpline() {
+        const p = parseFloat(document.getElementById('p-slider').value);
+        document.getElementById('p-value').innerText = p.toFixed(4);
+
+        // 1. WASM Compute
+        const t0 = performance.now();
+        // The WASM function returns a flat Float64Array [c1s, c2s, c3s, c4s]
+        const coeffs = solve_spline(xData, yData, weights, p, true);
+        const t1 = performance.now();
+        document.getElementById('solve-time').innerText = (t1 - t0).toFixed(2) + ' ms';
+
+        // Extract exact knots (c4 represents the spline value exactly at x_i)
+        for (let i = 0; i < pieces; i++) {
+            smoothedY[i] = coeffs[(3 * pieces) + i];
+        }
+
+        // Final point polynomial evaluation
+        const lastDx = xData[N - 1] - xData[N - 2];
+        const c1_last = coeffs[pieces - 1];
+        const c2_last = coeffs[(pieces) + (pieces - 1)];
+        const c3_last = coeffs[(2 * pieces) + (pieces - 1)];
+        const c4_last = coeffs[(3 * pieces) + (pieces - 1)];
+        smoothedY[N - 1] = (c1_last * Math.pow(lastDx, 3)) +
+            (c2_last * Math.pow(lastDx, 2)) +
+            (c3_last * lastDx) +
+            c4_last;
+
+        // 2. Canvas Render
+        const r0 = performance.now();
+
+        ctx.fillStyle = '#121212';
+        ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+        // Render Raw Data
+        ctx.beginPath();
+        ctx.moveTo(xData[0], yData[0]);
+        for (let i = 1; i < N; i++) {
+            ctx.lineTo(xData[i], yData[i]);
+        }
+        // Lower opacity for massive datasets so it doesn't turn into a solid red wall
+        ctx.strokeStyle = N > 100000 ? 'rgba(255, 50, 50, 0.05)' : 'rgba(255, 50, 50, 0.15)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // Render Spline
+        ctx.beginPath();
+        ctx.moveTo(xData[0], smoothedY[0]);
+        for (let i = 1; i < N; i++) {
+            ctx.lineTo(xData[i], smoothedY[i]);
+        }
+        ctx.strokeStyle = '#4ade80';
+        ctx.lineWidth = 2;
+        ctx.lineJoin = 'round';
+        ctx.stroke();
+
+        const r1 = performance.now();
+        document.getElementById('render-time').innerText = (r1 - r0).toFixed(2) + ' ms';
+    }
+
+    main().catch(console.error);
+</script>
+</body>
+</html>
